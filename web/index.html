@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>F2A-64 · 密钥与二维码生成器</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--txt:#1a1d24;--sub:#7a8494;--ac:#2f6bff;--line:#e6e9ef;--ok:#0aa15a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:26px 18px 60px}
+h1{font-size:24px;margin:0 0 4px}
+.lead{color:var(--sub);font-size:13px;margin-bottom:22px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+label{display:block;font-size:12.5px;color:var(--sub);margin:12px 0 6px}
+input,select{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;font-size:15px;background:#fafbfc;outline:0}
+input:focus,select:focus{border-color:var(--ac)}
+.row{display:flex;gap:10px}
+.row>*{flex:1}
+button{padding:12px 16px;border:0;border-radius:10px;background:var(--ac);color:#fff;font-size:15px;font-weight:600;cursor:pointer}
+button.ghost{background:#fff;color:var(--ac);border:1.5px solid var(--ac)}
+button:active{transform:scale(.98)}
+#qr{display:flex;justify-content:center;padding:14px;background:#fff;border-radius:12px}
+#qr svg,#qr img{width:240px;height:240px}
+code{display:block;background:#f4f6fa;border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-top:6px;
+ font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all;white-space:pre-wrap;color:#25405f}
+.hint{font-size:12px;color:var(--sub);margin-top:8px}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:8px}
+td,th{border-bottom:1px solid var(--line);padding:8px 6px;text-align:left}
+th{color:var(--sub);font-weight:600;font-size:12.5px}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:6px;background:#eaf0ff;color:var(--ac);font-weight:600}
+.tag.g{background:#eafaf1;color:var(--ok)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>F2A-64 · 密钥与二维码生成器</h1>
+  <div class="lead">给你的网站用户生成「密钥 + 二维码」。纯前端运行，密钥不出浏览器，可离线使用。</div>
+
+  <div class="card">
+    <label>账号名称（会显示在验证器里）</label>
+    <input id="name" placeholder="例：我的网站 · zhangsan" value="">
+
+    <label>密钥（Base32：A-Z 和 2-7）</label>
+    <div class="row">
+      <input id="secret" placeholder="点右边按钮随机生成" style="font-family:ui-monospace,monospace">
+      <button class="ghost" style="flex:0 0 auto" onclick="gen()">随机生成</button>
+    </div>
+
+    <label>算法类型</label>
+    <select id="type" onchange="gen()">
+      <option value="totp">标准 6 位 TOTP（30 秒一变，兼容谷歌/微软验证器）</option>
+      <option value="f2a64">F2A-64（64 位动态码，60 秒一变）</option>
+    </select>
+
+    <div class="hint">位数建议：6 位算法用 16 字符密钥；64 位算法用 64 字符密钥。</div>
+
+    <div style="margin-top:16px"><button onclick="render()">生成二维码</button></div>
+  </div>
+
+  <div class="card" id="out" style="display:none">
+    <div id="qr"></div>
+    <label>① 给验证器扫码的链接（otpauth 标准格式）</label>
+    <code id="uri"></code>
+    <label>② 网站后端保存的密钥（你自己数据库里存这个）</label>
+    <code id="sec"></code>
+    <label>③ 服务端校验代码（Python 示例）</label>
+    <code id="py"></code>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 6px;font-size:16px">两种算法对照</h3>
+    <table>
+      <tr><th>项目</th><th>标准 6 位 TOTP</th><th>F2A-64</th></tr>
+      <tr><td>哈希算法</td><td>HMAC-SHA1</td><td><b>HMAC-SHA512</b></td></tr>
+      <tr><td>时间窗口</td><td>30 秒</td><td><b>60 秒</b></td></tr>
+      <tr><td>输出长度</td><td>6 位数字</td><td><b>64 位字符（0-9 A-Z）</b></td></tr>
+      <tr><td>组合空间</td><td>10^6</td><td><b>36^64 ≈ 10^99</b></td></tr>
+      <tr><td>兼容性</td><td>谷歌/微软验证器</td><td>F2A-64 App</td></tr>
+    </table>
+    <div class="hint">
+      <b>关键</b>：两种算法共用同一把 Base32 密钥 —— 所以用户只存一条密钥，既能给老系统出 6 位，也能给新系统出 64 位。
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 6px;font-size:16px">服务端怎么校验（Python）</h3>
+    <code>import hmac, hashlib, struct, time, base64
+
+TABLE = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+def code64(secret_b32: str, step: int = 60) -> str:
+    """F2A-64：64 位动态码"""
+    key = base64.b32decode(secret_b32.upper() + "=" * (-len(secret_b32) % 8))
+    counter = int(time.time()) // step
+    h = hmac.new(key, struct.pack("&gt;Q", counter), hashlib.sha512).digest()  # 64 字节
+    return "".join(TABLE[b % 36] for b in h)                                  # 64 字符
+
+def verify(secret_b32: str, user_input: str, step: int = 60, window: int = 1) -> bool:
+    """允许前后各一个窗口（容忍时钟偏差）"""
+    now = int(time.time()) // step
+    for off in range(-window, window + 1):
+        key = base64.b32decode(secret_b32.upper() + "=" * (-len(secret_b32) % 8))
+        h = hmac.new(key, struct.pack("&gt;Q", now + off), hashlib.sha512).digest()
+        if "".join(TABLE[b % 36] for b in h) == user_input.strip().upper():
+            return True
+    return False</code>
+    <div class="hint">6 位 TOTP 用标准的 <code style="display:inline;padding:1px 6px">pyotp.TOTP(secret).verify(code)</code> 就行。</div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 6px;font-size:16px">三种接入方式</h3>
+    <table>
+      <tr><th>方式</th><th>怎么做</th></tr>
+      <tr><td><span class="tag g">推荐</span> 扫码</td><td>把生成的二维码显示给用户，用户用 F2A-64 App 扫一下就行</td></tr>
+      <tr><td><span class="tag">手动</span> 输密钥</td><td>把 ② 里的密钥给用户，让他在 App 里「添加密钥」粘贴</td></tr>
+      <tr><td><span class="tag">链接</span> 点击添加</td><td>把 ① 的 otpauth 链接放到网页上，手机点一下会唤起验证器</td></tr>
+    </table>
+  </div>
+</div>
+
+<script src="qrcode.min.js"></script>
+<script>
+var B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+function randB32(n) {
+  var a = new Uint8Array(n);
+  (window.crypto || window.msCrypto).getRandomValues(a);
+  var s = "";
+  for (var i = 0; i < n; i++) s += B32[a[i] % 32];
+  return s;
+}
+
+function gen() {
+  var t = document.getElementById("type").value;
+  document.getElementById("secret").value = randB32(t === "f2a64" ? 64 : 16);
+  render();
+}
+
+function buildURI(name, secret, type) {
+  var label = encodeURIComponent(name || "F2A-64");
+  if (type === "f2a64") {
+    // 64 位算法：用自定义 issuer + 参数 period=60，让 App 认出来
+    return "otpauth://totp/" + label +
+      "?secret=" + secret +
+      "&issuer=" + encodeURIComponent("F2A-64") +
+      "&period=60&digits=64&algorithm=SHA512";
+  }
+  return "otpauth://totp/" + label +
+    "?secret=" + secret + "&issuer=" + encodeURIComponent("F2A-64") +
+    "&period=30&digits=6&algorithm=SHA1";
+}
+
+function render() {
+  var name = document.getElementById("name").value.trim() || "F2A-64";
+  var secret = document.getElementById("secret").value.trim().toUpperCase().replace(/[^A-Z2-7]/g, "");
+  var type = document.getElementById("type").value;
+  if (secret.length < 8) { alert("密钥太短：6 位算法至少 16 字符，64 位算法建议 64 字符"); return; }
+  document.getElementById("secret").value = secret;
+
+  var uri = buildURI(name, secret, type);
+  document.getElementById("out").style.display = "block";
+  document.getElementById("uri").textContent = uri;
+  document.getElementById("sec").textContent = secret;
+
+  var py = type === "f2a64"
+    ? "# 用上面「服务端怎么校验」里的 code64 / verify（SHA512，窗口 60 秒）\n"
+    : "# 6 位标准 TOTP：\nimport pyotp\nok = pyotp.TOTP('" + secret + "').verify(user_code)";
+  document.getElementById("py").textContent = py;
+
+  // 生成二维码
+  var qr = qrcode(0, "M");
+  qr.addData(uri);
+  qr.make();
+  document.getElementById("qr").innerHTML = qr.createSvgTag({ cellSize: 5, margin: 6 });
+}
+
+// 打开就先生成一把
+window.addEventListener("DOMContentLoaded", function () { gen(); });
+</script>
+</body>
+</html>
